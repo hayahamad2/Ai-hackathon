@@ -346,7 +346,7 @@ st.caption("Key clinical factors that contributed to the predicted risk")
 
 
 if CAPTUM_OK:
-    st.markdown("###Data Completeness Check (Last 12 Hours)")
+    st.markdown("### Data Completeness Check (Last 12 Hours)")
 
     # ✅ compute missing rate BEFORE using it
     raw_window = g.loc[idx-SEQ_LEN+1:idx, FEATURES].values.astype(np.float32)
@@ -386,7 +386,7 @@ if CAPTUM_OK:
     top15_feats = [FEATURES[i] for i in top_idx15]
 
     # Key moments
-    st.markdown("###Critical Time Periods")
+    st.markdown("### Critical Time Periods")
     st.caption("Hours during which patient data had the strongest impact on the risk assessment")
 
     time_imp = A.sum(axis=1)
@@ -398,7 +398,7 @@ if CAPTUM_OK:
     st.divider()
 
     # Evidence table
-    st.markdown("###Clinical Evidence Summary")
+    st.markdown("### Clinical Evidence Summary")
     st.caption("Comparison between patient baseline values and current measurements")
 
     last_row = g.loc[idx]
@@ -429,7 +429,7 @@ if CAPTUM_OK:
     st.divider()
 
     # Reason cards
-    st.markdown("###Primary Clinical Contributors to Risk")
+    st.markdown("### Primary Clinical Contributors to Risk")
 
     window = g.loc[idx-SEQ_LEN+1:idx].copy()
 
@@ -468,7 +468,7 @@ if CAPTUM_OK:
     st.divider()
 
     # What-if (counterfactual)
-    st.markdown("###Hypothetical Scenario Analysis")
+    st.markdown("### Hypothetical Scenario Analysis")
     st.caption("Estimated effect on risk if a selected vital sign returned to the patient’s baseline")
 
     v_try = st.selectbox("Select a vital sign to normalize", VITALS, index=0)
@@ -497,7 +497,7 @@ if CAPTUM_OK:
     st.divider()
 
     # Heatmap
-    st.markdown("###Feature Contribution Timeline")
+    st.markdown("### Feature Contribution Timeline")
     st.caption("Relative contribution of each clinical feature over the assessment window")
 
     heat = A[:, top_idx15]  # [T,15]
