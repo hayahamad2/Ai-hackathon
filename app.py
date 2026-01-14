@@ -484,7 +484,7 @@ if CAPTUM_OK:
         colB.metric("What-if risk", f"{risk_cf*100:.1f}%")
         colC.metric("Δ risk", f"{(risk_cf-risk)*100:+.1f} pp")
 
-      st.caption("This simulation is intended to support clinical interpretation only and does not constitute a treatment recommendation.")
+        st.caption("This simulation is intended to support clinical interpretation only and does not constitute a treatment recommendation.")
 
     else:
         st.warning(f"What-if not applied: {msg}")
