@@ -219,54 +219,96 @@ for j, vital in enumerate(VITALS):
         row2[j-3].pyplot(fig)
 
 st.divider()
+def pretty_name(f):
+    # تحويل أسماء الفيتشر لصيغة طبيّة
+    if f.startswith("d_"):
+        return f"Trend (Δ) {f[2:]}"
+    if f.endswith("_dev"):
+        return f"Deviation from baseline: {f[:-4]}"
+    if f.endswith("_z"):
+        return f"Abnormality (Z-score): {f[:-2]}"
+    return f
 
-# =========================
-# XAI (Integrated Gradients)
-# =========================
-st.subheader("🧠 Explainable AI (XAI) – Why is risk high?")
+def clinical_hint(f):
+    # شرح سريع للطبيب (قابل للتعديل)
+    mapping = {
+        "HR": "Tachycardia (HR ↑) can be early sign of sepsis",
+        "Resp": "Increased RR may indicate respiratory distress / compensation",
+        "O2Sat": "Lower O2Sat may indicate hypoxia",
+        "Temp": "Fever or hypothermia are sepsis indicators",
+        "MAP": "Low MAP can indicate hypotension / shock risk",
+        "Lactate": "Rising lactate indicates poor perfusion"
+    }
+    # استخراج اسم القياس الأساسي
+    base = f.replace("d_", "").replace("_dev","").replace("_z","")
+    return mapping.get(base, "Contributes to risk pattern")
 
-if not CAPTUM_OK:
-    st.warning("Captum not installed in deployment environment. Add 'captum' to requirements.txt.")
-else:
-    with st.spinner("Computing Integrated Gradients..."):
-        ig = IntegratedGradients(RiskOnlyWrapper(model).to(DEVICE))
-        x_t = torch.tensor(X).unsqueeze(0).to(DEVICE)
-        baseline = torch.zeros_like(x_t)
-        attr = ig.attribute(x_t, baselines=baseline, target=0, n_steps=64)
+# ====== XAI: Integrated Gradients ======
+st.subheader("🧠 Explainable AI (Clinical Explanation)")
 
-    A = np.abs(attr.squeeze(0).detach().cpu().numpy())  # [T,F]
+if CAPTUM_OK:
+    ig = IntegratedGradients(RiskOnlyWrapper(model))
+    x_t = torch.tensor(X).unsqueeze(0).to(DEVICE)
+    attr = ig.attribute(x_t, baselines=torch.zeros_like(x_t), n_steps=64)
+    A = np.abs(attr.squeeze(0).detach().cpu().numpy())   # [T,F]
+
+    # أهمية كل feature = متوسط الإسناد عبر الزمن
     feat_imp = A.mean(axis=0)
-    top_k = 15
-    top_idx = np.argsort(-feat_imp)[:top_k]
-    top_feats = [FEATURES[i] for i in top_idx]
+    top_k = 5
+    top_idx = np.argsort(-feat_imp)[:15]     # للـ heatmap 15
+    top5_idx = np.argsort(-feat_imp)[:top_k] # للشرح 5
 
-    def doctor_text(f):
-        if f.startswith("d_"):
-            return f"Trend change in {f[2:]}"
-        if f.endswith("_dev"):
-            return f"Deviation from baseline: {f[:-4]}"
-        if f.endswith("_z"):
-            return f"Abnormality vs baseline: {f[:-2]}"
-        return f
+    top5_feats = [FEATURES[i] for i in top5_idx]
+    top15_feats = [FEATURES[i] for i in top_idx]
 
-    st.markdown("### ✅ Top-3 Clinical Reasons")
-    for f in top_feats[:3]:
-        st.write("•", doctor_text(f))
+    # ====== Clinical Reasons (Top 5) ======
+    st.markdown("### ✅ Top Reasons (human-friendly)")
+    for f in top5_feats:
+        st.write(f"**• {pretty_name(f)}** — {clinical_hint(f)}")
 
-    st.markdown("### 🔍 XAI Heatmap (Top-15 Features × Past 12h)")
-    fig, ax = plt.subplots(figsize=(10,4.5))
-    im = ax.imshow(A[:, top_idx], aspect="auto")
-    fig.colorbar(im, ax=ax, label="Attribution magnitude")
+    # ====== Evidence Table (Baseline vs Current) ======
+    st.markdown("### 📌 Evidence (Baseline vs Now)")
+    evidence_rows = []
+    last_row = g.loc[idx]  # current row
 
+    for vital in VITALS:
+        base_mean_col = f"base_mean_{vital}"
+        d_col = f"d_{vital}"
+        dev_col = f"{vital}_dev"
+
+        baseline_mean = float(last_row[base_mean_col]) if base_mean_col in g.columns else np.nan
+        current_val = float(last_row[vital]) if vital in g.columns else np.nan
+        delta_val = float(last_row[d_col]) if d_col in g.columns else np.nan
+        dev_val = float(last_row[dev_col]) if dev_col in g.columns else (current_val - baseline_mean)
+
+        evidence_rows.append({
+            "Vital": vital,
+            "Baseline(mean)": round(baseline_mean, 2) if pd.notna(baseline_mean) else None,
+            "Now": round(current_val, 2) if pd.notna(current_val) else None,
+            "Deviation": round(dev_val, 2) if pd.notna(dev_val) else None,
+            "Trend Δ (last hr)": round(delta_val, 2) if pd.notna(delta_val) else None
+        })
+
+    st.dataframe(pd.DataFrame(evidence_rows), use_container_width=True)
+
+    # ====== Heatmap (Top 15) ======
+    st.markdown("### 🔥 Attribution Heatmap (Top 15 Features × Past 12h)")
+    heat = A[:, top_idx]  # [T,15]
+
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    im = ax.imshow(heat, aspect="auto")
+    fig.colorbar(im, ax=ax, label="Importance (Integrated Gradients)")
+
+    ax.set_xticks(range(len(top15_feats)))
+    ax.set_xticklabels([pretty_name(f) for f in top15_feats], rotation=60, ha="right")
     ax.set_yticks(range(len(hours_past)))
     ax.set_yticklabels(hours_past.astype(int))
-    ax.set_xticks(range(len(top_feats)))
-    ax.set_xticklabels(top_feats, rotation=60, ha="right")
 
-    ax.set_xlabel("Top features")
+    ax.set_xlabel("Features (human-friendly)")
     ax.set_ylabel("Past window hours")
-    ax.set_title(f"Integrated Gradients | Risk={risk*100:.1f}%")
+    ax.set_title(f"Why Risk={risk*100:.1f}% ? (Model explanation)")
     fig.tight_layout()
     st.pyplot(fig)
 
-st.caption("For clinicians: Risk% + Forecast + Top-3 reasons. Heatmap is for deeper inspection.")
+else:
+    st.warning("Captum not installed – XAI unavailable.")
