@@ -346,14 +346,23 @@ st.caption("Key clinical factors that contributed to the predicted risk")
 
 
 if CAPTUM_OK:
-   st.markdown("### Data Completeness Check (Last 12 Hours)")
+    st.markdown("### Data Completeness Check (Last 12 Hours)")
+
     if miss_rate == 0:
-        st.success("All required vital signs were available. Risk assessment is based on complete data.")
+        st.success(
+            "All required vital signs were available. "
+            "Risk assessment is based on complete data."
+        )
     elif miss_rate < 0.2:
-        st.warning("Some vital signs were missing. Risk assessment should be interpreted with caution.")
+        st.warning(
+            "Some vital signs were missing. "
+            "Risk assessment should be interpreted with caution."
+        )
     else:
-        st.error("Significant data missing. Risk assessment reliability is reduced.")
-    tion).")
+        st.error(
+            "Significant data missing. "
+            "Risk assessment reliability is reduced."
+        )
 
     st.divider()
 
