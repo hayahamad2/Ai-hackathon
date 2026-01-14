@@ -347,7 +347,6 @@ st.caption("Key clinical factors that contributed to the predicted risk")
 
 if CAPTUM_OK:
    st.markdown("### Data Completeness Check (Last 12 Hours)")
-
     if miss_rate == 0:
         st.success("All required vital signs were available. Risk assessment is based on complete data.")
     elif miss_rate < 0.2:
