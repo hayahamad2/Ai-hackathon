@@ -33,9 +33,23 @@ class GRUMultiTaskMultiStep(nn.Module):
     def __init__(self, n_features, hidden, horizon, n_targets):
         super().__init__()
         self.gru = nn.GRU(n_features, hidden, batch_first=True)
-        self.shared = nn.Sequential(nn.LayerNorm(hidden), nn.Dropout(0.15))
-        self.forecast_head = nn.Linear(hidden, horizon * n_targets)
-        self.risk_head = nn.Linear(hidden, 1)
+        self.shared = nn.Sequential(
+            nn.LayerNorm(hidden),
+            nn.Dropout(0.15)
+        )
+
+        # ✅ heads = Sequential (عشان المفاتيح forecast_head.0 / forecast_head.2)
+        self.forecast_head = nn.Sequential(
+            nn.Linear(hidden, 128),
+            nn.ReLU(),
+            nn.Linear(128, horizon * n_targets)
+        )
+        self.risk_head = nn.Sequential(
+            nn.Linear(hidden, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
+
         self.horizon = horizon
         self.n_targets = n_targets
 
@@ -46,6 +60,7 @@ class GRUMultiTaskMultiStep(nn.Module):
         forecast = self.forecast_head(z).view(-1, self.horizon, self.n_targets)
         risk_logit = self.risk_head(z)
         return forecast, risk_logit
+
 
 class RiskOnlyWrapper(nn.Module):
     def __init__(self, model):
