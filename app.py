@@ -38,7 +38,7 @@ class GRUMultiTaskMultiStep(nn.Module):
             nn.Dropout(0.15)
         )
 
-        # ✅ heads = Sequential (عشان المفاتيح forecast_head.0 / forecast_head.2)
+        # heads = Sequential (keys forecast_head.0 / forecast_head.2)
         self.forecast_head = nn.Sequential(
             nn.Linear(hidden, 128),
             nn.ReLU(),
@@ -66,9 +66,11 @@ class RiskOnlyWrapper(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
+
     def forward(self, x):
         _, r = self.model(x)
         return r
+
 
 # =========================
 # Load model artifact
@@ -97,8 +99,136 @@ model.load_state_dict(artifact["model_state"])
 model.eval()
 
 # =========================
-# XAI helpers (Doctor-friendly)
+# Helpers
 # =========================
+def standardize(X):
+    X = (X - feat_mean) / feat_std
+    return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+def destandardize(Y):
+    return Y * tgt_std.reshape(1, -1) + tgt_mean.reshape(1, -1)
+
+@torch.no_grad()
+def predict(x_std):
+    x = torch.tensor(x_std).unsqueeze(0).to(DEVICE)  # [1,T,F]
+    f, r = model(x)
+    return destandardize(f.squeeze(0).cpu().numpy()), torch.sigmoid(r).item()
+
+def plot_vital(hours_past, values_past, hours_future, values_future, vital, baseline=None):
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(hours_past, values_past, marker="o", label="Observed (past)")
+    ax.plot(hours_future, values_future, marker="X", label="Forecast (next 6h)")
+    ax.plot([hours_past[-1], hours_future[0]], [values_past[-1], values_future[0]], "--")
+    if baseline is not None and not (pd.isna(baseline)):
+        ax.axhline(float(baseline), linestyle=":", linewidth=2, label="Patient baseline")
+    ax.set_title(vital)
+    ax.set_xlabel("Hour")
+    ax.grid(True)
+    ax.legend()
+    return fig
+
+
+# =========================
+# UI: Upload CSV
+# =========================
+st.title("🩺 Sepsis Time-Machine Dashboard (GRU + XAI)")
+st.caption("Upload your PreprocessedDataset.csv (large files should NOT be stored in GitHub).")
+
+uploaded_csv = st.sidebar.file_uploader("Upload PreprocessedDataset.csv", type=["csv"])
+if uploaded_csv is None:
+    st.info("⬅️ ارفعي ملف PreprocessedDataset.csv من الشريط الجانبي ثم سيظهر الداشبورد.")
+    st.stop()
+
+df = pd.read_csv(uploaded_csv)
+df.columns = df.columns.str.strip()
+df["Hour"] = pd.to_numeric(df["Hour"], errors="coerce")
+df = df.sort_values(["PatientID_tmp", "Hour"]).reset_index(drop=True)
+
+missing = [c for c in (["PatientID_tmp", "Hour", "SepsisLabel"] + list(FEATURES) + list(VITALS)) if c not in df.columns]
+if missing:
+    st.error(f"Missing columns in uploaded CSV: {missing}")
+    st.stop()
+
+# =========================
+# Sidebar selections
+# =========================
+st.sidebar.title("Patient Selection")
+pid = st.sidebar.selectbox("PatientID", df["PatientID_tmp"].unique())
+g = df[df["PatientID_tmp"] == pid].sort_values("Hour").reset_index(drop=True)
+
+valid_idx = []
+for i in range(len(g)):
+    if i >= SEQ_LEN - 1 and i <= len(g) - HORIZON - 1:
+        valid_idx.append(i)
+
+if not valid_idx:
+    st.warning("This patient does not have enough history/future for prediction. Choose another patient.")
+    st.stop()
+
+idx = st.sidebar.selectbox(
+    "Current time (index)",
+    valid_idx,
+    format_func=lambda i: f"Hour {int(g.loc[i, 'Hour'])}"
+)
+
+# =========================
+# Prepare model input
+# =========================
+X_raw = g.loc[idx-SEQ_LEN+1:idx, FEATURES].values.astype(np.float32)
+X = standardize(X_raw)
+
+forecast, risk = predict(X)
+
+hours_past = g.loc[idx-SEQ_LEN+1:idx, "Hour"].values
+current_hour = float(hours_past[-1])
+hours_future = np.arange(current_hour + 1, current_hour + 1 + HORIZON)
+
+# Baseline values if exist (for vitals plots)
+baseline_vals = None
+base_cols = [f"base_mean_{v}" for v in VITALS]
+if all(c in g.columns for c in base_cols):
+    baseline_vals = [float(g.loc[idx, c]) if pd.notna(g.loc[idx, c]) else np.nan for c in base_cols]
+
+# =========================
+# Main metrics
+# =========================
+c1, c2, c3 = st.columns(3)
+c1.metric("PatientID", str(pid))
+c2.metric("Current Hour", str(int(current_hour)))
+c3.metric(f"Sepsis Risk (next {RISK_HORIZON}h)", f"{risk*100:.1f}%")
+
+st.divider()
+
+# =========================
+# Plots
+# =========================
+st.subheader("⏱️ Observed (last 12h) + Forecast (next 6h)")
+
+row1 = st.columns(3)
+row2 = st.columns(3)
+
+for j, vital in enumerate(VITALS):
+    fig = plot_vital(
+        hours_past,
+        g.loc[idx-SEQ_LEN+1:idx, vital].values,
+        hours_future,
+        forecast[:, j],
+        vital,
+        baseline_vals[j] if baseline_vals else None
+    )
+    if j < 3:
+        row1[j].pyplot(fig)
+    else:
+        row2[j-3].pyplot(fig)
+
+st.divider()
+
+# ============================================================
+# XAI: FULL BLOCK (Doctor-friendly) — compatible with your training
+# FEATURES = VITALS + d_* + *_dev
+# ============================================================
+
+# ---------- XAI helpers ----------
 def pretty_name(f):
     if f.startswith("d_"):
         return f"Trend (Δ) {f[2:]}"
@@ -127,19 +257,18 @@ def direction_text(dev):
 
 def severity_badge(vital, current, baseline):
     """
-    قواعد مبسطة للتوضيح (ليست معيار طبي نهائي).
-    عدّلوها حسب مشروعكم.
+    Simplified thresholds for interpretability (NOT a clinical standard).
+    Adjust as needed.
     """
     if pd.isna(current) or pd.isna(baseline):
         return "N/A"
-
     dev = current - baseline
 
     rules = {
-        "HR": (15, 25),        # +15 moderate, +25 high
+        "HR": (15, 25),
         "Resp": (4, 8),
         "Temp": (0.7, 1.2),
-        "MAP": (-10, -20),     # انخفاض MAP أخطر
+        "MAP": (-10, -20),
         "O2Sat": (-3, -6),
         "Lactate": (0.7, 1.5),
     }
@@ -147,7 +276,6 @@ def severity_badge(vital, current, baseline):
         return "Info"
 
     a, b = rules[vital]
-
     if vital in ["MAP", "O2Sat"]:
         if dev <= b: return "High"
         if dev <= a: return "Moderate"
@@ -172,8 +300,9 @@ def get_val(row, col, default=np.nan):
 
 def apply_counterfactual_last_point_vitals_dev_d(x_cf_raw, v, FEATURES, last_row, prev_row=None):
     """
-    يدعم تدريبكم:
+    Compatible with your training:
     FEATURES = VITALS + [d_*] + [*_dev]
+    It updates: vital, dev, d_ at LAST time step.
     """
     if v not in FEATURES:
         return x_cf_raw, False, f"{v} not in FEATURES"
@@ -186,7 +315,7 @@ def apply_counterfactual_last_point_vitals_dev_d(x_cf_raw, v, FEATURES, last_row
 
     base_mean = float(last_row[base_mean_col])
 
-    # 1) set vital (raw) at last time step to baseline
+    # 1) set vital (raw) at last step to baseline mean
     x_cf_raw[-1, j_v] = base_mean
 
     # 2) update dev to 0 if exists
@@ -201,49 +330,42 @@ def apply_counterfactual_last_point_vitals_dev_d(x_cf_raw, v, FEATURES, last_row
             prev_val = float(prev_row[v])
         else:
             prev_val = float(x_cf_raw[-2, j_v]) if x_cf_raw.shape[0] >= 2 else base_mean
-
         x_cf_raw[-1, FEATURES.index(d_name)] = base_mean - prev_val
 
     return x_cf_raw, True, "OK"
 
 
-# =========================
-# ====== XAI: Integrated Gradients (Clinical Explanation) ======
-# =========================
+# ---------- XAI UI ----------
 st.subheader("🧠 Explainable AI (Clinical Explanation)")
 
 if CAPTUM_OK:
-    # ---------- Data quality panel ----------
+    # Data quality
     st.markdown("### 🧾 Data Quality (last 12h window)")
     raw_window = g.loc[idx-SEQ_LEN+1:idx, FEATURES].values.astype(np.float32)
-
     miss_rate = np.isnan(raw_window).mean()
     st.write(f"- Missing rate in window: **{miss_rate*100:.1f}%**")
-
     if miss_rate > 0.15:
         st.warning("High missing rate may reduce explanation reliability (NaNs become 0 after standardization).")
 
     st.divider()
 
-    # ---------- Integrated Gradients ----------
-    ig = IntegratedGradients(RiskOnlyWrapper(model))
-    x_t = torch.tensor(X).unsqueeze(0).to(DEVICE)
-
-    # baseline = zeros (standardized space)
-    attr = ig.attribute(x_t, baselines=torch.zeros_like(x_t), n_steps=64)
-    A = np.abs(attr.squeeze(0).detach().cpu().numpy())   # [T,F]
+    # Integrated Gradients
+    with st.spinner("Computing Integrated Gradients..."):
+        ig = IntegratedGradients(RiskOnlyWrapper(model))
+        x_t = torch.tensor(X).unsqueeze(0).to(DEVICE)
+        attr = ig.attribute(x_t, baselines=torch.zeros_like(x_t), n_steps=64)
+        A = np.abs(attr.squeeze(0).detach().cpu().numpy())  # [T,F]
 
     feat_imp = A.mean(axis=0)
     top_k = 5
-    top_idx15 = np.argsort(-feat_imp)[:15]   # heatmap
+    top_idx15 = np.argsort(-feat_imp)[:15]
     top_idx5  = np.argsort(-feat_imp)[:top_k]
-
     top5_feats  = [FEATURES[i] for i in top_idx5]
     top15_feats = [FEATURES[i] for i in top_idx15]
 
-    # ---------- Key moments ----------
+    # Key moments
     st.markdown("### 🕒 Key Moments (most influential hours in the last 12h)")
-    time_imp = A.sum(axis=1)  # [T]
+    time_imp = A.sum(axis=1)
     top_t = np.argsort(-time_imp)[:3]
     for t in top_t:
         hour = int(hours_past[t])
@@ -251,18 +373,16 @@ if CAPTUM_OK:
 
     st.divider()
 
-    # ---------- Evidence table ----------
+    # Evidence table
     st.markdown("### 📌 Evidence (Baseline vs Now)")
     last_row = g.loc[idx]
     evidence_rows = []
-
     for vital in VITALS:
         baseline_mean = get_val(last_row, f"base_mean_{vital}", np.nan)
         current_val   = get_val(last_row, vital, np.nan)
         dev_val       = get_val(last_row, f"{vital}_dev", np.nan)
         delta_val     = get_val(last_row, f"d_{vital}", np.nan)
 
-        # fallback dev if not present
         if pd.isna(dev_val) and pd.notna(current_val) and pd.notna(baseline_mean):
             dev_val = current_val - baseline_mean
 
@@ -278,18 +398,16 @@ if CAPTUM_OK:
             "Sustained (hrs/12h)": f"{dur}/{SEQ_LEN}" if dur is not None else None,
             "Severity": sev
         })
-
     st.dataframe(pd.DataFrame(evidence_rows), use_container_width=True)
 
     st.divider()
 
-    # ---------- Clinical Reason Cards ----------
+    # Reason cards
     st.markdown("### ✅ Top Reasons (Doctor-friendly cards)")
     window = g.loc[idx-SEQ_LEN+1:idx].copy()
 
     for f in top5_feats:
         vital = find_related_vital(f, VITALS)
-
         if vital is not None:
             baseline_mean = get_val(last_row, f"base_mean_{vital}", np.nan)
             current_val   = get_val(last_row, vital, np.nan)
@@ -302,11 +420,7 @@ if CAPTUM_OK:
             sev = severity_badge(vital, current_val, baseline_mean)
             dur = sustained_hours(window[vital], baseline_mean, band=0.0)
 
-            # narrative
-            if pd.notna(dev_val):
-                dev_phrase = f"{dev_val:+.2f} ({direction_text(dev_val)})"
-            else:
-                dev_phrase = "N/A"
+            dev_phrase = f"{dev_val:+.2f} ({direction_text(dev_val)})" if pd.notna(dev_val) else "N/A"
 
             st.info(
                 f"**{vital}** — {clinical_hint(vital)}\n\n"
@@ -326,12 +440,12 @@ if CAPTUM_OK:
 
     st.divider()
 
-    # ---------- What-if (Counterfactual) ----------
+    # What-if (counterfactual)
     st.markdown("### 🧪 What-if (Counterfactual) — What would lower the risk?")
     v_try = st.selectbox("Adjust a vital to baseline (last point in the window)", VITALS, index=0)
 
     x_cf_raw = g.loc[idx-SEQ_LEN+1:idx, FEATURES].values.astype(np.float32).copy()
-    prev_row = g.loc[idx-1] if idx-1 >= 0 else None
+    prev_row = g.loc[idx-1] if idx - 1 >= 0 else None
 
     x_cf_raw, ok, msg = apply_counterfactual_last_point_vitals_dev_d(
         x_cf_raw, v_try, FEATURES, last_row=g.loc[idx], prev_row=prev_row
@@ -352,7 +466,7 @@ if CAPTUM_OK:
 
     st.divider()
 
-    # ---------- Heatmap ----------
+    # Heatmap
     st.markdown("### 🔥 Attribution Heatmap (Top 15 Features × Past 12h)")
     heat = A[:, top_idx15]  # [T,15]
 
