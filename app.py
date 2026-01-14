@@ -58,7 +58,7 @@ class RiskOnlyWrapper(nn.Module):
 # =========================
 # Load model artifact
 # =========================
-artifact = torch.load(CKPT_PATH, map_location=DEVICE)
+artifact = torch.load(CKPT_PATH, map_location=DEVICE, weights_only=False)
 
 FEATURES = artifact["FEATURES"]
 VITALS = artifact["VITALS"]
