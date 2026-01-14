@@ -346,25 +346,30 @@ st.caption("Key clinical factors that contributed to the predicted risk")
 
 
 if CAPTUM_OK:
-    st.markdown("### Data Completeness Check (Last 12 Hours)")
+    st.markdown("###Data Completeness Check (Last 12 Hours)")
+
+    # ✅ compute missing rate BEFORE using it
+    raw_window = g.loc[idx-SEQ_LEN+1:idx, FEATURES].values.astype(np.float32)
+    miss_rate = np.isnan(raw_window).mean()
 
     if miss_rate == 0:
         st.success(
-            "All required vital signs were available. "
+            "All required vital signs were available during the last 12 hours. "
             "Risk assessment is based on complete data."
         )
     elif miss_rate < 0.2:
         st.warning(
-            "Some vital signs were missing. "
+            "Some vital signs were missing during the last 12 hours. "
             "Risk assessment should be interpreted with caution."
         )
     else:
         st.error(
-            "Significant data missing. "
+            "A significant portion of vital signs data is missing. "
             "Risk assessment reliability is reduced."
         )
 
     st.divider()
+
 
     # Integrated Gradients
     with st.spinner("Computing Integrated Gradients..."):
