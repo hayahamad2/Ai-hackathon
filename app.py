@@ -131,12 +131,13 @@ def plot_vital(hours_past, values_past, hours_future, values_future, vital, base
 # =========================
 # UI: Upload CSV
 # =========================
-st.title("🩺 Sepsis Time-Machine Dashboard (GRU + XAI)")
-st.caption("Upload your PreprocessedDataset.csv (large files should NOT be stored in GitHub).")
+st.title("Clinical Sepsis Risk Monitoring System")
+st.caption("AI-assisted assessment of patient deterioration based on recent vital signs")
+
 
 uploaded_csv = st.sidebar.file_uploader("Upload PreprocessedDataset.csv", type=["csv"])
 if uploaded_csv is None:
-    st.info("⬅️ ارفعي ملف PreprocessedDataset.csv من الشريط الجانبي ثم سيظهر الداشبورد.")
+    st.info("Please upload the patient monitoring data file to begin the clinical risk assessment.")
     st.stop()
 
 df = pd.read_csv(uploaded_csv)
@@ -152,8 +153,8 @@ if missing:
 # =========================
 # Sidebar selections
 # =========================
-st.sidebar.title("Patient Selection")
-pid = st.sidebar.selectbox("PatientID", df["PatientID_tmp"].unique())
+st.sidebar.title("Patient Overview")
+pid = st.sidebar.selectbox("Patient Identifier", df["PatientID_tmp"].unique())
 g = df[df["PatientID_tmp"] == pid].sort_values("Hour").reset_index(drop=True)
 
 valid_idx = []
@@ -166,7 +167,7 @@ if not valid_idx:
     st.stop()
 
 idx = st.sidebar.selectbox(
-    "Current time (index)",
+    "Assessment Time (Hour)",
     valid_idx,
     format_func=lambda i: f"Hour {int(g.loc[i, 'Hour'])}"
 )
@@ -195,14 +196,18 @@ if all(c in g.columns for c in base_cols):
 c1, c2, c3 = st.columns(3)
 c1.metric("PatientID", str(pid))
 c2.metric("Current Hour", str(int(current_hour)))
-c3.metric(f"Sepsis Risk (next {RISK_HORIZON}h)", f"{risk*100:.1f}%")
+c3.metric( f"Predicted Sepsis Risk (next {RISK_HORIZON} hours)",
+    f"{risk*100:.1f}%",
+    help="Estimated probability of sepsis occurring within the next clinical window")
 
 st.divider()
 
 # =========================
 # Plots
 # =========================
-st.subheader("⏱️ Observed (last 12h) + Forecast (next 6h)")
+st.subheader("Recent Vital Signs and Short-Term Projection")
+st.caption("Observed measurements over the last 12 hours with model-based projection for the next 6 hours")
+
 
 row1 = st.columns(3)
 row2 = st.columns(3)
@@ -336,16 +341,20 @@ def apply_counterfactual_last_point_vitals_dev_d(x_cf_raw, v, FEATURES, last_row
 
 
 # ---------- XAI UI ----------
-st.subheader("🧠 Explainable AI (Clinical Explanation)")
+st.subheader("Clinical Decision Explanation")
+st.caption("Key clinical factors that contributed to the predicted risk")
+
 
 if CAPTUM_OK:
-    # Data quality
-    st.markdown("### 🧾 Data Quality (last 12h window)")
-    raw_window = g.loc[idx-SEQ_LEN+1:idx, FEATURES].values.astype(np.float32)
-    miss_rate = np.isnan(raw_window).mean()
-    st.write(f"- Missing rate in window: **{miss_rate*100:.1f}%**")
-    if miss_rate > 0.15:
-        st.warning("High missing rate may reduce explanation reliability (NaNs become 0 after standardization).")
+   st.markdown("### Data Completeness Check (Last 12 Hours)")
+
+    if miss_rate == 0:
+        st.success("All required vital signs were available. Risk assessment is based on complete data.")
+    elif miss_rate < 0.2:
+        st.warning("Some vital signs were missing. Risk assessment should be interpreted with caution.")
+    else:
+        st.error("Significant data missing. Risk assessment reliability is reduced.")
+    tion).")
 
     st.divider()
 
@@ -364,7 +373,9 @@ if CAPTUM_OK:
     top15_feats = [FEATURES[i] for i in top_idx15]
 
     # Key moments
-    st.markdown("### 🕒 Key Moments (most influential hours in the last 12h)")
+    st.markdown("###Critical Time Periods")
+    st.caption("Hours during which patient data had the strongest impact on the risk assessment")
+
     time_imp = A.sum(axis=1)
     top_t = np.argsort(-time_imp)[:3]
     for t in top_t:
@@ -374,7 +385,9 @@ if CAPTUM_OK:
     st.divider()
 
     # Evidence table
-    st.markdown("### 📌 Evidence (Baseline vs Now)")
+    st.markdown("###Clinical Evidence Summary")
+    st.caption("Comparison between patient baseline values and current measurements")
+
     last_row = g.loc[idx]
     evidence_rows = []
     for vital in VITALS:
@@ -403,7 +416,8 @@ if CAPTUM_OK:
     st.divider()
 
     # Reason cards
-    st.markdown("### ✅ Top Reasons (Doctor-friendly cards)")
+    st.markdown("###Primary Clinical Contributors to Risk")
+
     window = g.loc[idx-SEQ_LEN+1:idx].copy()
 
     for f in top5_feats:
@@ -441,8 +455,10 @@ if CAPTUM_OK:
     st.divider()
 
     # What-if (counterfactual)
-    st.markdown("### 🧪 What-if (Counterfactual) — What would lower the risk?")
-    v_try = st.selectbox("Adjust a vital to baseline (last point in the window)", VITALS, index=0)
+    st.markdown("###Hypothetical Scenario Analysis")
+    st.caption("Estimated effect on risk if a selected vital sign returned to the patient’s baseline")
+
+    v_try = st.selectbox("Select a vital sign to normalize", VITALS, index=0)
 
     x_cf_raw = g.loc[idx-SEQ_LEN+1:idx, FEATURES].values.astype(np.float32).copy()
     prev_row = g.loc[idx-1] if idx - 1 >= 0 else None
@@ -460,14 +476,19 @@ if CAPTUM_OK:
         colB.metric("What-if risk", f"{risk_cf*100:.1f}%")
         colC.metric("Δ risk", f"{(risk_cf-risk)*100:+.1f} pp")
 
-        st.caption("Simulation to aid clinical understanding (not a treatment recommendation).")
+      st.caption(
+    "This simulation is intended to support clinical interpretation only and does not constitute a treatment recommendation."
+)
+
     else:
         st.warning(f"What-if not applied: {msg}")
 
     st.divider()
 
     # Heatmap
-    st.markdown("### 🔥 Attribution Heatmap (Top 15 Features × Past 12h)")
+    st.markdown("###Feature Contribution Timeline")
+    st.caption("Relative contribution of each clinical feature over the assessment window")
+
     heat = A[:, top_idx15]  # [T,15]
 
     fig, ax = plt.subplots(figsize=(10, 4.5))
